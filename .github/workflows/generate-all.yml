@@ -1,72 +1,35 @@
 name: Generate All (manual)
 
-concurrency:
-  group: index-release-publisher
-  cancel-in-progress: false
-
 on:
   workflow_dispatch:
     inputs:
       max_plugins:
-        description: "Maximum number of plugins to process in a single run"
+        description: "Max number of plugins to process (avoids rate limits in one go)"
         required: false
-        default: "500"
-
-permissions:
-  contents: write
-  discussions: write
+        default: "1000"
+      start_from:
+        description: "Start processing from this plugin name (skips alphabetical plugins before it)"
+        required: false
+        default: ""
+      plugin_names:
+        description: "Comma-separated list of plugins to process"
+        required: false
+        default: ""
 
 jobs:
-  generate:
-    runs-on: ubuntu-latest
+  generate-index:
+    uses: ./.github/workflows/generate-plugin-index.yml
+    secrets: inherit
+    with:
+      max_plugins: ${{ github.event.inputs.max_plugins || '1000' }}
+      start_from: ${{ github.event.inputs.start_from || '' }}
+      plugin_names: ${{ github.event.inputs.plugin_names || '' }}
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyyaml
-
-      - name: Download current index.json (best effort)
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          INDEX_RELEASE_TAG: generated-index
-        run: |
-          python scripts/download_index_release.py
-
-      - name: Generate index (all plugins)
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          BEFORE_SHA: ${{ github.sha }}
-          AFTER_SHA: ${{ github.sha }}
-          MAX_PLUGINS: ${{ github.event.inputs.max_plugins || '500' }}
-          RUN_ALL: "1"
-        run: |
-          python scripts/generate_index.py
-
-      - name: Update plugin discussions (all plugins)
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          BEFORE_SHA: ${{ github.sha }}
-          AFTER_SHA: ${{ github.sha }}
-          MAX_PLUGINS: ${{ github.event.inputs.max_plugins || '500' }}
-          RUN_ALL: "1"
-        run: |
-          python scripts/update_plugin_discussions.py
-
-      - name: Publish index.json to Release (replace asset)
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          INDEX_RELEASE_TAG: generated-index
-        run: |
-          python scripts/publish_index_release.py
+  generate-discussions:
+    needs: generate-index
+    uses: ./.github/workflows/generate-plugin-discussions.yml
+    secrets: inherit
+    with:
+      max_plugins: ${{ github.event.inputs.max_plugins || '1000' }}
+      start_from: ${{ github.event.inputs.start_from || '' }}
+      plugin_names: ${{ github.event.inputs.plugin_names || '' }}

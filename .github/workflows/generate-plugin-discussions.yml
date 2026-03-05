@@ -1,10 +1,32 @@
-name: Refresh Plugin Discussions (manual)
+name: Generate Plugin Discussions
 
 concurrency:
   group: index-release-publisher
   cancel-in-progress: false
 
 on:
+  workflow_call:
+    inputs:
+      max_plugins:
+        type: string
+        required: false
+        default: "1000"
+      start_from:
+        type: string
+        required: false
+        default: ""
+      plugin_names:
+        type: string
+        required: false
+        default: ""
+      before_sha:
+        type: string
+        required: false
+        default: ""
+      after_sha:
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
     inputs:
       max_plugins:
@@ -13,6 +35,18 @@ on:
         default: "1000"
       start_from:
         description: "Start processing from this plugin name (skips alphabetical plugins before it)"
+        required: false
+        default: ""
+      plugin_names:
+        description: "Comma-separated list of plugins to process (overrides SHAs)"
+        required: false
+        default: ""
+      before_sha:
+        description: "Git diff start SHA (leave empty to process all)"
+        required: false
+        default: ""
+      after_sha:
+        description: "Git diff end SHA (leave empty to process all)"
         required: false
         default: ""
 
@@ -51,9 +85,10 @@ jobs:
       - name: Refresh discussions (all plugins)
         env:
           GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          BEFORE_SHA: ""
-          AFTER_SHA: ""
-          MAX_PLUGINS: ${{ github.event.inputs.max_plugins || '1000' }}
-          START_FROM: ${{ github.event.inputs.start_from || '' }}
+          MAX_PLUGINS: ${{ inputs.max_plugins || github.event.inputs.max_plugins || '1000' }}
+          START_FROM: ${{ inputs.start_from || github.event.inputs.start_from || '' }}
+          PLUGIN_NAMES: ${{ inputs.plugin_names || github.event.inputs.plugin_names || '' }}
+          BEFORE_SHA: ${{ inputs.before_sha || github.event.inputs.before_sha || '' }}
+          AFTER_SHA: ${{ inputs.after_sha || github.event.inputs.after_sha || '' }}
         run: |
           python scripts/update_plugin_discussions.py

@@ -15,52 +15,17 @@ permissions:
   discussions: write
 
 jobs:
-  ensure:
-    runs-on: ubuntu-latest
+  generate-index:
+    uses: ./.github/workflows/generate-plugin-index.yml
+    secrets: inherit
+    with:
+      before_sha: ${{ github.event.before }}
+      after_sha: ${{ github.sha }}
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyyaml
-
-      - name: Download current index.json (best effort)
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          INDEX_RELEASE_TAG: generated-index
-        run: |
-          python scripts/download_index_release.py
-
-      - name: Generate index (post-commit)
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          BEFORE_SHA: ${{ github.event.before }}
-          AFTER_SHA: ${{ github.sha }}
-        run: |
-          python scripts/generate_index.py
-
-      - name: Update plugin discussions (post-commit)
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          BEFORE_SHA: ${{ github.event.before }}
-          AFTER_SHA: ${{ github.sha }}
-        run: |
-          python scripts/update_plugin_discussions.py
-
-      - name: Publish index.json to Release (replace asset)
-        env:
-          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
-          INDEX_RELEASE_TAG: generated-index
-        run: |
-          python scripts/publish_index_release.py
+  generate-discussions:
+    needs: generate-index
+    uses: ./.github/workflows/generate-plugin-discussions.yml
+    secrets: inherit
+    with:
+      before_sha: ${{ github.event.before }}
+      after_sha: ${{ github.sha }}

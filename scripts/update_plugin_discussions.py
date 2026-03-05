@@ -2,21 +2,24 @@ import json
 import os
 import subprocess
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, NoReturn, cast
 
 import yaml
 
+from plugin_resolution import (
+    DEFAULT_MAX_PLUGINS,
+    PLUGINS_DIR,
+    REPO_ROOT,
+    PluginResolutionError,
+    get_plugin_names,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PLUGINS_DIR = REPO_ROOT / "plugins"
 DISCUSSIONS_CATEGORY_NAME = "Plugins"
 DISCUSSION_MARKER = "<!-- a0-plugins-discussion -->"
 PLUGIN_MARKER_PREFIX = "<!-- a0-plugins-plugin:"
 DISCUSSION_TEMPLATE_PATH = REPO_ROOT / "scripts" / "plugin_discussion_template.md"
-DEFAULT_MAX_PLUGINS = 100
 
 
 class UpdatePluginDiscussionsError(Exception):
@@ -74,51 +77,9 @@ def _with_retries(label: str, fn: Any, max_attempts: int = 3) -> Any:
     raise RuntimeError("unreachable")
 
 
-def _run(cmd: list[str]) -> str:
-    out = subprocess.check_output(cmd, cwd=REPO_ROOT)
-    return out.decode("utf-8", errors="replace")
-
-
 def _plugin_exists(plugin_name: str) -> bool:
     plugin_yaml = PLUGINS_DIR / plugin_name / "plugin.yaml"
     return plugin_yaml.exists()
-
-
-def _git_diff_names(before: str, after: str) -> list[str]:
-    raw = _run(["git", "diff", "--name-only", f"{before}..{after}"])
-    return [line.strip() for line in raw.splitlines() if line.strip()]
-
-
-def _git_all_plugin_paths(commit: str) -> list[str]:
-    raw = _run(["git", "ls-tree", "-r", "--name-only", commit, "--", "plugins"])  # noqa: E501
-    return [line.strip() for line in raw.splitlines() if line.strip()]
-
-
-def _is_zero_sha(sha: str | None) -> bool:
-    if not sha:
-        return True
-    s = sha.strip()
-    return bool(s) and set(s) == {"0"}
-
-
-def _detected_plugin_names(before: str | None, after: str, run_all: bool) -> list[str]:
-    if run_all:
-        paths = _git_all_plugin_paths(after)
-    else:
-        if _is_zero_sha(before):
-            paths = _git_all_plugin_paths(after)
-        else:
-            assert before is not None
-            paths = _git_diff_names(cast(str, before), after)
-
-    plugin_names: set[str] = set()
-    for p in paths:
-        parts = Path(p).parts
-        if len(parts) >= 2 and parts[0] == "plugins":
-            plugin_names.add(parts[1])
-
-    out = [n for n in sorted(plugin_names) if n and not n.startswith("_")]
-    return out
 
 
 def _read_plugin_yaml(plugin_name: str) -> dict[str, Any]:
@@ -141,83 +102,18 @@ def _read_plugin_yaml(plugin_name: str) -> dict[str, Any]:
 def _token() -> str:
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
-        _fail("GITHUB_TOKEN is required")
+        return ""
     return token
 
 
-def _token_type_hint(token: str) -> str:
-    # Do not print the token. Only provide a coarse hint based on public prefixes.
-    if token.startswith("ghs_"):
-        return "ghs_* (GitHub Actions / app installation token style)"
-    if token.startswith("ghp_"):
-        return "ghp_* (classic PAT style)"
-    if token.startswith("github_pat_"):
-        return "github_pat_* (fine-grained PAT style)"
-    return "(unknown token prefix)"
+def _graphql_request(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    url = "https://api.github.com/graphql"
+    body = {"query": query, "variables": variables}
+    data = json.dumps(body).encode("utf-8")
 
-
-def _rest_request_json(method: str, url: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, str], Any]:
-    data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
         url,
         data=data,
-        headers={
-            "Authorization": f"Bearer {_token()}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "a0-plugins-discussion-updater",
-            "Content-Type": "application/json",
-        },
-        method=method,
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-            headers = {k.lower(): v for (k, v) in resp.headers.items()}
-            try:
-                parsed = json.loads(raw) if raw.strip() else None
-            except Exception:
-                parsed = raw
-            return int(resp.status), headers, parsed
-    except urllib.error.HTTPError as e:
-        raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
-        headers = {k.lower(): v for (k, v) in e.headers.items()} if e.headers else {}
-        req_id = headers.get("x-github-request-id", "")
-        scopes = headers.get("x-oauth-scopes", "")
-        raise GitHubHttpError(
-            status=int(e.code),
-            method=method,
-            url=url,
-            request_id=req_id,
-            scopes=scopes,
-            body=raw,
-        )
-    except Exception as e:
-        _fail(f"GitHub REST request failed method={method} url={url}: {e}")
-
-
-def _print_auth_diagnostics() -> None:
-    token = _token()
-    print(f"Auth: token_hint={_token_type_hint(token)}")
-    status, headers, parsed = _rest_request_json("GET", "https://api.github.com/user")
-    login = None
-    if isinstance(parsed, dict) and isinstance(parsed.get("login"), str):
-        login = parsed.get("login")
-    scopes = headers.get("x-oauth-scopes", "")
-    fine_grained = headers.get("x-accepted-oauth-scopes", "")
-    req_id = headers.get("x-github-request-id", "")
-    print(
-        "Auth: "
-        f"rest_user_status={status} login={login!s} request_id={req_id!s} "
-        f"x-oauth-scopes={scopes!s} x-accepted-oauth-scopes={fine_grained!s}"
-    )
-
-
-def _graphql_request(query: str, variables: dict[str, Any]) -> dict[str, Any]:
-    req = urllib.request.Request(
-        "https://api.github.com/graphql",
-        data=json.dumps({"query": query, "variables": variables}).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {_token()}",
             "Accept": "application/vnd.github+json",
@@ -354,23 +250,6 @@ def _parse_github_owner_from_url(url: str) -> str | None:
     if len(parts) >= 2:
         owner = parts[0]
         return owner if owner else None
-    return None
-
-
-def _discussion_number_from_url(url: str) -> int | None:
-    # Expected: https://github.com/OWNER/REPO/discussions/123
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception:
-        return None
-
-    parts = [p for p in parsed.path.split("/") if p]
-    if len(parts) >= 4 and parts[2] == "discussions":
-        try:
-            n = int(parts[3])
-            return n if n > 0 else None
-        except Exception:
-            return None
     return None
 
 
@@ -541,31 +420,16 @@ def _update_discussion(discussion_id: str, title: str, body: str) -> None:
 def main() -> int:
     owner = os.environ.get("GITHUB_REPOSITORY_OWNER")
     repo_full = os.environ.get("GITHUB_REPOSITORY")
-    before = os.environ.get("BEFORE_SHA")
-    after = os.environ.get("AFTER_SHA")
-    run_all = os.environ.get("RUN_ALL", "").strip() == "1"
 
     if not owner or not repo_full or "/" not in repo_full:
         _fail("GITHUB_REPOSITORY_OWNER and GITHUB_REPOSITORY are required")
 
-    if not after:
-        _fail("AFTER_SHA is required")
-
     repo = repo_full.split("/", 1)[1]
-    max_plugins = int(os.environ.get("MAX_PLUGINS", str(DEFAULT_MAX_PLUGINS)))
 
-    plugin_names = _detected_plugin_names(before, after, run_all)
+    plugin_names = get_plugin_names()
     if not plugin_names:
         print("No plugin changes detected; nothing to do.")
         return 0
-
-    if len(plugin_names) > max_plugins:
-        _fail(
-            f"Detected {len(plugin_names)} plugins in scope, which exceeds MAX_PLUGINS={max_plugins}. "
-            "Increase MAX_PLUGINS or run multiple smaller pushes."
-        )
-
-    _print_auth_diagnostics()
 
     repo_id, category_id = _get_repo_and_category(owner, repo)
 
@@ -636,6 +500,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except UpdatePluginDiscussionsError as e:
+    except (UpdatePluginDiscussionsError, PluginResolutionError) as e:
         print(f"ERROR: {e}")
         raise SystemExit(1)

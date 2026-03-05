@@ -6,11 +6,15 @@ from typing import Any, NoReturn, cast
 
 import yaml
 
+from plugin_resolution import (
+    DEFAULT_MAX_PLUGINS,
+    PLUGINS_DIR,
+    REPO_ROOT,
+    PluginResolutionError,
+    get_plugin_names,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PLUGINS_DIR = REPO_ROOT / "plugins"
 INDEX_JSON_PATH = REPO_ROOT / "index.json"
-DEFAULT_MAX_PLUGINS = 100
 
 
 class GenerateIndexError(Exception):
@@ -82,6 +86,58 @@ def _save_index(data: dict[str, Any]) -> None:
     )
 
 
+def _index_plugin_entry(plugin_name: str, meta: dict[str, Any]) -> dict[str, Any]:
+    title = meta.get("title") if isinstance(meta.get("title"), str) else None
+    description = meta.get("description") if isinstance(meta.get("description"), str) else None
+    gh = meta.get("github") if isinstance(meta.get("github"), str) else None
+    gh_str = gh if isinstance(gh, str) else ""
+    author = _parse_github_owner_from_url(gh_str) if gh_str else None
+    tags_val = meta.get("tags")
+    tags: list[str] | None = None
+    if isinstance(tags_val, list) and all(isinstance(t, str) for t in tags_val):
+        tags = [t for t in tags_val if t.strip()]
+    thumb_rel = _thumbnail_rel_path(plugin_name)
+    thumb = _repo_file_url(thumb_rel) if isinstance(thumb_rel, str) else None
+    return {
+        "title": title,
+        "description": description,
+        "github": gh,
+        "author": author,
+        "tags": tags,
+        "thumbnail": thumb,
+    }
+
+
+def _upsert_index_plugin(
+    index: dict[str, Any],
+    plugin_name: str,
+    meta: dict[str, Any],
+    discussion_url: str | None,
+) -> None:
+    plugins = index.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+        index["plugins"] = plugins
+
+    existing = plugins.get(plugin_name)
+    existing_dict = existing if isinstance(existing, dict) else {}
+
+    # Merge-based update: preserve any fields not owned by this generator.
+    entry: dict[str, Any] = dict(existing_dict)
+
+    generated = _index_plugin_entry(plugin_name, meta)
+    entry["title"] = generated.get("title")
+    entry["description"] = generated.get("description")
+    entry["github"] = generated.get("github")
+    entry["author"] = generated.get("author")
+    entry["tags"] = generated.get("tags")
+    entry["thumbnail"] = generated.get("thumbnail")
+    if discussion_url is not None:
+        entry["discussion"] = discussion_url
+
+    plugins[plugin_name] = entry
+
+
 def _thumbnail_rel_path(plugin_name: str) -> str | None:
     plugin_dir = PLUGINS_DIR / plugin_name
     if not plugin_dir.exists():
@@ -136,95 +192,6 @@ def _parse_github_owner_from_url(url: str) -> str | None:
     return None
 
 
-def _index_plugin_entry(plugin_name: str, meta: dict[str, Any]) -> dict[str, Any]:
-    title = meta.get("title") if isinstance(meta.get("title"), str) else None
-    description = meta.get("description") if isinstance(meta.get("description"), str) else None
-    gh = meta.get("github") if isinstance(meta.get("github"), str) else None
-    gh_str = gh if isinstance(gh, str) else ""
-    author = _parse_github_owner_from_url(gh_str) if gh_str else None
-    tags_val = meta.get("tags")
-    tags: list[str] | None = None
-    if isinstance(tags_val, list) and all(isinstance(t, str) for t in tags_val):
-        tags = [t for t in tags_val if t.strip()]
-    thumb_rel = _thumbnail_rel_path(plugin_name)
-    thumb = _repo_file_url(thumb_rel) if isinstance(thumb_rel, str) else None
-    return {
-        "title": title,
-        "description": description,
-        "github": gh,
-        "author": author,
-        "tags": tags,
-        "thumbnail": thumb,
-    }
-
-
-def _upsert_index_plugin(
-    index: dict[str, Any],
-    plugin_name: str,
-    meta: dict[str, Any],
-    discussion_url: str | None,
-) -> None:
-    plugins = index.get("plugins")
-    if not isinstance(plugins, dict):
-        plugins = {}
-        index["plugins"] = plugins
-
-    existing = plugins.get(plugin_name)
-    existing_dict = existing if isinstance(existing, dict) else {}
-
-    # Merge-based update: preserve any fields not owned by this generator.
-    entry: dict[str, Any] = dict(existing_dict)
-
-    generated = _index_plugin_entry(plugin_name, meta)
-    entry["title"] = generated.get("title")
-    entry["description"] = generated.get("description")
-    entry["github"] = generated.get("github")
-    entry["author"] = generated.get("author")
-    entry["tags"] = generated.get("tags")
-    entry["thumbnail"] = generated.get("thumbnail")
-    if discussion_url is not None:
-        entry["discussion"] = discussion_url
-
-    plugins[plugin_name] = entry
-
-
-def _git_diff_names(before: str, after: str) -> list[str]:
-    raw = _run(["git", "diff", "--name-only", f"{before}..{after}"])
-    return [line.strip() for line in raw.splitlines() if line.strip()]
-
-
-def _git_all_plugin_paths(commit: str) -> list[str]:
-    raw = _run(["git", "ls-tree", "-r", "--name-only", commit, "--", "plugins"])  # noqa: E501
-    return [line.strip() for line in raw.splitlines() if line.strip()]
-
-
-def _is_zero_sha(sha: str | None) -> bool:
-    if not sha:
-        return True
-    s = sha.strip()
-    return bool(s) and set(s) == {"0"}
-
-
-def _detected_plugin_names(before: str | None, after: str, run_all: bool) -> list[str]:
-    if run_all:
-        paths = _git_all_plugin_paths(after)
-    else:
-        if _is_zero_sha(before):
-            paths = _git_all_plugin_paths(after)
-        else:
-            assert before is not None
-            paths = _git_diff_names(cast(str, before), after)
-
-    plugin_names: set[str] = set()
-    for p in paths:
-        parts = Path(p).parts
-        if len(parts) >= 2 and parts[0] == "plugins":
-            plugin_names.add(parts[1])
-
-    out = [n for n in sorted(plugin_names) if n and not n.startswith("_")]
-    return out
-
-
 def _read_plugin_yaml(plugin_name: str) -> dict[str, Any]:
     plugin_yaml = PLUGINS_DIR / plugin_name / "plugin.yaml"
     if not plugin_yaml.exists():
@@ -244,37 +211,17 @@ def _read_plugin_yaml(plugin_name: str) -> dict[str, Any]:
 
 def main() -> int:
     repo_full = os.environ.get("GITHUB_REPOSITORY")
-    before = os.environ.get("BEFORE_SHA")
-    after = os.environ.get("AFTER_SHA")
-    run_all = os.environ.get("RUN_ALL", "").strip() == "1"
 
     if not repo_full or "/" not in repo_full:
         _fail("GITHUB_REPOSITORY is required")
 
-    if not after:
-        _fail("AFTER_SHA is required")
-
-    max_plugins = int(os.environ.get("MAX_PLUGINS", str(DEFAULT_MAX_PLUGINS)))
-
-    plugin_names = _detected_plugin_names(before, after, run_all)
+    plugin_names = get_plugin_names()
     if not plugin_names:
-        print("No plugin changes detected; nothing to do.")
+        print("No plugin changes detected; index left as is.")
         return 0
-
-    if len(plugin_names) > max_plugins:
-        _fail(
-            f"Detected {len(plugin_names)} plugins in scope, which exceeds MAX_PLUGINS={max_plugins}. "
-            "Increase MAX_PLUGINS or run multiple smaller pushes."
-        )
 
     index = _load_index()
     index_before = json.dumps(index, sort_keys=True)
-
-    # When running a full refresh, also remove any index entries whose plugin no longer exists.
-    if run_all:
-        removed = _prune_removed_plugins(index)
-        if removed:
-            print(f"Pruned {removed} removed plugins from {INDEX_JSON_PATH.name}")
 
     updated = 0
 
@@ -310,6 +257,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except GenerateIndexError as e:
+    except (GenerateIndexError, PluginResolutionError) as e:
         print(f"ERROR: {e}")
         raise SystemExit(1)
