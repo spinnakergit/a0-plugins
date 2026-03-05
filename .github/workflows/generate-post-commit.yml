@@ -37,22 +37,30 @@ jobs:
       - name: Download current index.json (best effort)
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
           INDEX_RELEASE_TAG: generated-index
         run: |
           python scripts/download_index_release.py
 
       - name: Generate index (post-commit)
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.sha }}
         run: |
-          python scripts/generate_post_commit.py
+          python scripts/generate_index.py
+
+      - name: Update plugin discussions (post-commit)
+        env:
+          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          python scripts/update_plugin_discussions.py
 
       - name: Publish index.json to Release (replace asset)
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.A0_GITHUB_TOKEN || github.token }}
           INDEX_RELEASE_TAG: generated-index
         run: |
           python scripts/publish_index_release.py
