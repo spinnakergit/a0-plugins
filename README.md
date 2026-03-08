@@ -11,11 +11,11 @@ Each plugin submission is a single folder (unique plugin name) containing:
 - **Optional thumbnail image** (`.png`, `.jpeg`/`.jpg`, or `.webp`)
   - **Square aspect ratio**
   - **Max size: 20 KB**
-- **Optional screenshots** under `screenshots/`
-  - Up to **3 screenshots**
-  - File names must be numeric: **`1`**, **`2`**, **`3`** (with image extension)
-  - Allowed formats: `.png`, `.jpg`/`.jpeg`, `.webp`
-  - **Max size: 250 KB per screenshot**
+- **Optional screenshots** listed in `plugin.yaml` as full URLs
+  - Up to **5 screenshot URLs**
+  - Allowed formats by URL path extension: `.png`, `.jpg`/`.jpeg`, `.webp`
+  - URL max length: **200 characters**
+  - Validator checks each URL is reachable and file size is <= **2 MB**
 
 This repository is an index only: `plugin.yaml` points to the plugin's own repository.
 
@@ -30,54 +30,53 @@ If your PR keeps failing checks and has no activity for 7+ days, it may be autom
 - **One plugin per PR**
   - Your PR must add exactly **one** new top-level subfolder for your plugin.
 - **Unique folder name**
-  - Use a unique, stable folder name (recommended: short, lowercase, `kebab-case`).
+  - Use a unique, stable folder name with lowercase letters, numbers, and underscores only (regex: `^[a-z0-9_]+$`).
 - **Reserved names**
   - Folders starting with `_` are reserved for project/internal use (examples, templates, etc.) and are **not visible in Agent Zero**. Do not submit community plugins with a leading underscore.
 - **Required metadata**
   - All required fields in `plugin.yaml` must be present and non-empty.
 - **Optional metadata**
-  - The only optional field is **`tags`**.
+  - Optional fields are **`tags`** and **`screenshots`**.
 
 ### Automated validation (CI)
 
 PRs are automatically checked for:
 
 - **Structure**
-  - Exactly one plugin folder per PR under `plugins/<your-plugin-name>/`
-  - No extra files (only `plugin.yaml`, an optional thumbnail, and optional files in `screenshots/`)
+  - Exactly one plugin folder per PR under `plugins/<your_plugin_name>/`
+  - Plugin folder name must match `^[a-z0-9_]+$` (lowercase letters, numbers, underscores only)
+  - No extra files (only `plugin.yaml` and an optional thumbnail image)
 - **`plugin.yaml` rules**
-  - Only allowed fields: `title`, `description`, `github`, `tags`
+  - Only allowed fields: `title`, `description`, `github`, `tags`, `screenshots`
   - Required fields: `title`, `description`, `github`
+  - Total file length max: 2000 characters
   - `title` max length: 50 characters
   - `description` max length: 500 characters
   - `github` must be a GitHub repository URL that exists and contains `plugin.yaml` at the repository root
-  - `tags` (if present) must be a list of strings, up to 5
+  - `tags` (if present) must be a list of strings, up to 5, max 30 chars per tag
+  - `screenshots` (if present) must be a list of up to 5 full `http(s)` URLs
 - **Thumbnail rules (optional)**
   - Must be named `thumbnail.<ext>`
   - Must be square and <= 20 KB
   - Allowed formats: `.png`, `.jpg`/`.jpeg`, `.webp`
-- **Screenshot rules (optional)**
-  - Must be under `screenshots/`
-  - Up to 3 files total
-  - Filenames must be `1.<ext>`, `2.<ext>`, `3.<ext>`
-  - Allowed formats: `.png`, `.jpg`/`.jpeg`, `.webp`
-  - Max size per file: 250 KB
+- **Screenshot URL rules (optional)**
+  - Must be provided in `plugin.yaml` as full URLs (no local screenshot files in this repo)
+  - Up to 5 URLs
+  - URL length max: 200 characters each
+  - URL path extension must be one of: `.png`, `.jpg`/`.jpeg`, `.webp`
+  - Each URL must be reachable and content size must be <= 2 MB
 
 ### Folder structure
 
 ```text
-plugins/<your-plugin-name>/
+plugins/<your_plugin_name>/
   plugin.yaml
   thumbnail.png|thumbnail.jpg|thumbnail.jpeg|thumbnail.webp   (optional)
-  screenshots/                                            (optional)
-    1.png|1.jpg|1.jpeg|1.webp
-    2.png|2.jpg|2.jpeg|2.webp
-    3.png|3.jpg|3.jpeg|3.webp
 ```
 
 ### `plugin.yaml` format
 
-See `plugins/example1/plugin.yaml` for the reference format.
+See `plugins/_example1/plugin.yaml` for the reference format.
 
 Required fields:
 
@@ -87,7 +86,8 @@ Required fields:
 
 Optional fields:
 
-- **`tags`**: List of tags (recommended list: [`TAGS.md`](./TAGS.md), up to 5 tags)
+- **`tags`**: List of tags (recommended list: [`TAGS.md`](./TAGS.md), up to 5 tags, max 30 chars each)
+- **`screenshots`**: List of full screenshot image URLs (up to 5, each <= 200 chars)
 
 Example:
 
@@ -98,6 +98,9 @@ github: https://github.com/agentzero/a0-plugin-example
 tags:
   - example
   - template
+screenshots:
+  - https://example.com/images/preview-home.png
+  - https://cdn.example.org/a0-plugin/flow.webp
 ```
 
 ## Recommended tags

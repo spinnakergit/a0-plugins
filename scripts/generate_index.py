@@ -12,6 +12,7 @@ from plugin_resolution import (
     REPO_ROOT,
     PluginResolutionError,
     get_plugin_names,
+    is_valid_plugin_dirname,
 )
 
 INDEX_JSON_PATH = REPO_ROOT / "index.json"
@@ -76,7 +77,11 @@ def _prune_removed_plugins(index: dict[str, Any]) -> int:
     for plugin_name in list(plugins.keys()):
         if not isinstance(plugin_name, str):
             continue
-        if not plugin_name or plugin_name.startswith("_"):
+        if not plugin_name:
+            continue
+        if not is_valid_plugin_dirname(plugin_name):
+            del plugins[plugin_name]
+            removed += 1
             continue
         if not _plugin_exists(plugin_name):
             del plugins[plugin_name]
@@ -109,8 +114,10 @@ def _index_plugin_entry(plugin_name: str, meta: dict[str, Any]) -> dict[str, Any
         tags = [t for t in tags_val if t.strip()]
     thumb_rel = _thumbnail_rel_path(plugin_name)
     thumb = _repo_file_url(thumb_rel) if isinstance(thumb_rel, str) else None
-    screenshot_rels = _screenshot_rel_paths(plugin_name)
-    screenshots = [_repo_file_url(rel) for rel in screenshot_rels]
+    screenshots_val = meta.get("screenshots")
+    screenshots: list[str] = []
+    if isinstance(screenshots_val, list) and all(isinstance(s, str) for s in screenshots_val):
+        screenshots = [s.strip() for s in screenshots_val if s.strip()]
     return {
         "title": title,
         "description": description,
@@ -163,22 +170,6 @@ def _thumbnail_rel_path(plugin_name: str) -> str | None:
             return p.relative_to(REPO_ROOT).as_posix()
     return None
 
-
-def _screenshot_rel_paths(plugin_name: str) -> list[str]:
-    plugin_dir = PLUGINS_DIR / plugin_name
-    screenshots_dir = plugin_dir / "screenshots"
-    if not screenshots_dir.exists() or not screenshots_dir.is_dir():
-        return []
-
-    rel_paths: list[str] = []
-    for filename in ("1", "2", "3"):
-        for ext in ALLOWED_IMAGE_EXTS:
-            p = screenshots_dir / f"{filename}{ext}"
-            if p.exists():
-                rel_paths.append(p.relative_to(REPO_ROOT).as_posix())
-                break
-
-    return rel_paths
 
 
 def _read_authors() -> dict[str, Any]:

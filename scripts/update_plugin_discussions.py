@@ -14,6 +14,7 @@ from plugin_resolution import (
     REPO_ROOT,
     PluginResolutionError,
     get_plugin_names,
+    is_valid_plugin_dirname,
 )
 
 DISCUSSIONS_CATEGORY_NAME = "Plugins"
@@ -50,6 +51,12 @@ def _fail(msg: str) -> NoReturn:
     raise UpdatePluginDiscussionsError(msg)
 
 
+
+def _run(cmd: list[str]) -> str:
+    out = subprocess.check_output(cmd, cwd=REPO_ROOT)
+    return out.decode("utf-8", errors="replace")
+
+
 def _is_transient_http_status(status: int) -> bool:
     return status in {408, 429, 500, 502, 503, 504}
 
@@ -81,6 +88,40 @@ def _plugin_exists(plugin_name: str) -> bool:
     plugin_yaml = PLUGINS_DIR / plugin_name / "plugin.yaml"
     return plugin_yaml.exists()
 
+
+def _get_removed_plugin_names() -> list[str]:
+    before = os.environ.get("BEFORE_SHA", "").strip()
+    after = os.environ.get("AFTER_SHA", "").strip()
+    if not before or not after:
+        return []
+
+    raw = _run(["git", "diff", "--name-status", f"{before}..{after}"])
+    removed: set[str] = set()
+
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("	")
+        if len(parts) < 2:
+            continue
+
+        status = parts[0]
+        old_path = ""
+        if status.startswith("D"):
+            old_path = parts[1]
+        elif status.startswith("R") and len(parts) >= 3:
+            old_path = parts[1]
+
+        if not old_path:
+            continue
+
+        path_parts = Path(old_path).parts
+        if len(path_parts) >= 2 and path_parts[0] == "plugins":
+            plugin_name = path_parts[1]
+            if is_valid_plugin_dirname(plugin_name):
+                removed.add(plugin_name)
+
+    return sorted(removed)
 
 def _read_plugin_yaml(plugin_name: str) -> dict[str, Any]:
     plugin_yaml = PLUGINS_DIR / plugin_name / "plugin.yaml"
@@ -337,6 +378,29 @@ def _find_existing_discussion(owner: str, repo: str, plugin_name: str, expected_
     return None
 
 
+def _close_discussion(discussion_id: str) -> None:
+    query = """
+    mutation($id: ID!) {
+      closeDiscussion(input: {discussionId: $id}) {
+        discussion {
+          id
+          url
+          closed
+        }
+      }
+    }
+    """
+
+    data = _graphql_request(query, {"id": discussion_id})
+    cd = data.get("closeDiscussion")
+    if not isinstance(cd, dict):
+        _fail("Unexpected GraphQL response: missing closeDiscussion")
+    disc = cd.get("discussion")
+    if not isinstance(disc, dict):
+        _fail("Unexpected GraphQL response: missing discussion")
+    if disc.get("closed") is not True:
+        _fail("Attempted to close discussion but it is still open")
+
 def _reopen_discussion(discussion_id: str) -> None:
     query = """
     mutation($id: ID!) {
@@ -435,8 +499,36 @@ def main() -> int:
 
     created = 0
     updated = 0
+    closed = 0
     skipped = 0
     failed: list[str] = []
+
+    removed_plugin_names = _get_removed_plugin_names()
+    for plugin_name in removed_plugin_names:
+        if _plugin_exists(plugin_name):
+            continue
+        try:
+            expected_title = _discussion_title(plugin_name)
+
+            def _find_removed() -> dict[str, Any] | None:
+                return _find_existing_discussion(owner, repo, plugin_name, expected_title)
+
+            existing = _with_retries(f"search removed discussion {plugin_name}", _find_removed)
+            if not existing:
+                continue
+
+            disc_id = existing.get("id")
+            is_closed = existing.get("closed") is True
+            if isinstance(disc_id, str) and disc_id and not is_closed:
+                _with_retries(f"close discussion {plugin_name}", lambda: _close_discussion(disc_id))
+                closed += 1
+                print(f"Closed: {plugin_name} -> {existing.get('url')}")
+        except UpdatePluginDiscussionsError as e:
+            failed.append(plugin_name)
+            print(f"ERROR: removed plugin={plugin_name}: {e}")
+        except Exception as e:
+            failed.append(plugin_name)
+            print(f"ERROR: removed plugin={plugin_name}: {e}")
 
     for plugin_name in plugin_names:
         try:
@@ -453,9 +545,9 @@ def main() -> int:
             existing = _with_retries(f"search discussion {plugin_name}", _find)
             if existing:
                 disc_id = existing.get("id")
-                closed = existing.get("closed")
+                is_existing_closed = existing.get("closed")
                 existing_url = existing.get("url") if isinstance(existing.get("url"), str) else ""
-                if isinstance(disc_id, str) and closed is True:
+                if isinstance(disc_id, str) and is_existing_closed is True:
                     _with_retries(f"reopen discussion {plugin_name}", lambda: _reopen_discussion(disc_id))
 
                 if isinstance(disc_id, str) and disc_id:
@@ -486,7 +578,7 @@ def main() -> int:
             print(f"ERROR: plugin={plugin_name}: {e}")
 
     print(
-        f"Done. created={created} updated={updated} skipped={skipped} "
+        f"Done. created={created} updated={updated} closed={closed} skipped={skipped} "
         f"failed={len(failed)} total={len(plugin_names)}"
     )
     if failed:
