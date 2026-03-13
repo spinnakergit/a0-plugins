@@ -12,6 +12,7 @@ from plugin_resolution import INDEX_YAML_NAME, PLUGINS_DIR, REPO_ROOT, is_reserv
 INDEX_JSON_PATH = REPO_ROOT / "index.json"
 PLUGIN_MARKER_PREFIX = "<!-- a0-plugins-plugin:"
 PLUGIN_MARKER_RE = re.compile(r"<!-- a0-plugins-plugin:([^>]+?) -->")
+BLOCKED_MD_NAME = "blocked.md"
 
 
 class FindOrphanPluginNamesError(Exception):
@@ -109,7 +110,8 @@ def _index_plugin_names_and_discussions() -> tuple[set[str], set[str]]:
 def _plugin_exists(plugin_name: str) -> bool:
     if is_reserved_plugin_dirname(plugin_name):
         return False
-    return (PLUGINS_DIR / plugin_name / INDEX_YAML_NAME).exists()
+    plugin_dir = PLUGINS_DIR / plugin_name
+    return (plugin_dir / INDEX_YAML_NAME).exists() and not (plugin_dir / BLOCKED_MD_NAME).exists()
 
 
 def _discussion_marker_name(body: str) -> str | None:

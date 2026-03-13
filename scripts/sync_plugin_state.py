@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +18,8 @@ DISCUSSIONS_CATEGORY_NAME = "Plugins"
 DISCUSSION_MARKER = "<!-- a0-plugins-discussion -->"
 PLUGIN_MARKER_PREFIX = "<!-- a0-plugins-plugin:"
 DISCUSSION_TEMPLATE_PATH = REPO_ROOT / "scripts" / "plugin_discussion_template.md"
+SUSPENDED_MD_NAME = "suspended.md"
+BLOCKED_MD_NAME = "blocked.md"
 
 
 class SyncPluginStateError(Exception):
@@ -150,7 +153,21 @@ def _get_owner_repo() -> tuple[str, str]:
 def _plugin_exists(plugin_name: str) -> bool:
     if is_reserved_plugin_dirname(plugin_name):
         return False
-    return (PLUGINS_DIR / plugin_name / INDEX_YAML_NAME).exists()
+    plugin_dir = PLUGINS_DIR / plugin_name
+    return (plugin_dir / INDEX_YAML_NAME).exists() and not (plugin_dir / BLOCKED_MD_NAME).exists()
+
+
+def _plugin_blocked(plugin_name: str) -> bool:
+    plugin_dir = PLUGINS_DIR / plugin_name
+    return plugin_dir.exists() and (plugin_dir / BLOCKED_MD_NAME).exists()
+
+
+def _plugin_suspended_markdown(plugin_name: str) -> str | None:
+    plugin_dir = PLUGINS_DIR / plugin_name
+    suspended_md = plugin_dir / SUSPENDED_MD_NAME
+    if not suspended_md.exists():
+        return None
+    return suspended_md.read_text(encoding="utf-8").strip() or None
 
 
 def _read_plugin_yaml(plugin_name: str) -> dict[str, Any]:
@@ -267,7 +284,7 @@ def _index_plugin_entry(plugin_name: str, meta: dict[str, Any], discussion_url: 
     screenshots_val = meta.get("screenshots")
     screenshots = [s.strip() for s in screenshots_val if isinstance(s, str) and s.strip()] if isinstance(screenshots_val, list) else []
     thumb_rel = _thumbnail_rel_path(plugin_name)
-    return {
+    entry = {
         "title": title,
         "description": description,
         "github": gh,
@@ -277,6 +294,46 @@ def _index_plugin_entry(plugin_name: str, meta: dict[str, Any], discussion_url: 
         "screenshots": screenshots,
         "discussion": discussion_url,
     }
+    suspended = _plugin_suspended_markdown(plugin_name)
+    if suspended:
+        entry["suspended"] = suspended
+    return entry
+
+
+def _commit_has_plugin_file(commit: str, plugin_name: str, filename: str) -> bool:
+    if not commit or set(commit) == {"0"}:
+        return False
+    rel = f"plugins/{plugin_name}/{filename}"
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}:{rel}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _suspension_comment_markdown(plugin_name: str) -> str | None:
+    before = os.environ.get("BEFORE_SHA", "").strip()
+    after = os.environ.get("AFTER_SHA", "").strip() or "HEAD"
+    suspended_before = _commit_has_plugin_file(before, plugin_name, SUSPENDED_MD_NAME)
+    blocked_before = _commit_has_plugin_file(before, plugin_name, BLOCKED_MD_NAME)
+    suspended_after = _commit_has_plugin_file(after, plugin_name, SUSPENDED_MD_NAME)
+    blocked_after = _commit_has_plugin_file(after, plugin_name, BLOCKED_MD_NAME)
+    was_suspended = suspended_before or blocked_before
+    is_suspended = suspended_after or blocked_after
+    if was_suspended == is_suspended:
+        return None
+    if is_suspended:
+        markdown = _plugin_suspended_markdown(plugin_name)
+        if markdown is None and _plugin_blocked(plugin_name):
+            blocked_md = PLUGINS_DIR / plugin_name / BLOCKED_MD_NAME
+            markdown = blocked_md.read_text(encoding="utf-8").strip() or None
+        message = "### This plugin has been suspended"
+        if markdown:
+            return f"{message}\n\n{markdown}"
+        return f"{message}\n\nTemporarily suspended by repository maintainers."
+    return "### Plugin has been unsuspended"
 
 
 def _upsert_index_plugin(index: dict[str, Any], plugin_name: str, entry: dict[str, Any]) -> None:
@@ -491,6 +548,23 @@ def _close_discussion(discussion_id: str) -> dict[str, Any]:
     return cast(dict[str, Any], payload.get("discussion"))
 
 
+def _add_discussion_comment(discussion_id: str, body: str) -> None:
+    query = """
+    mutation($discussionId: ID!, $body: String!) {
+      addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+        comment {
+          id
+        }
+      }
+    }
+    """
+    data = _graphql_request(query, {"discussionId": discussion_id, "body": body})
+    payload = data.get("addDiscussionComment")
+    comment = payload.get("comment") if isinstance(payload, dict) else None
+    if not isinstance(comment, dict) or not isinstance(comment.get("id"), str):
+        _fail("Unexpected GraphQL response: missing discussion comment")
+
+
 def _sync_existing_plugin(
     owner: str,
     repo: str,
@@ -505,6 +579,7 @@ def _sync_existing_plugin(
         f"search discussion {plugin_name}",
         lambda: _find_existing_discussion(owner, repo, plugin_name),
     )
+    suspension_comment = _suspension_comment_markdown(plugin_name)
     if existing and isinstance(existing.get("id"), str):
         discussion_id = cast(str, existing.get("id"))
         if existing.get("closed") is True:
@@ -517,6 +592,11 @@ def _sync_existing_plugin(
             f"update discussion {plugin_name}",
             lambda: _update_discussion(discussion_id, title, body),
         )
+        if suspension_comment:
+            _with_retries(
+                f"comment discussion {plugin_name}",
+                lambda: _add_discussion_comment(discussion_id, suspension_comment),
+            )
         url = discussion.get("url") if isinstance(discussion.get("url"), str) else ""
         if not url:
             _fail(f"Updated discussion missing url for '{plugin_name}'")
@@ -525,6 +605,11 @@ def _sync_existing_plugin(
         f"create discussion {plugin_name}",
         lambda: _create_discussion(repo_id, category_id, title, body),
     )
+    if suspension_comment and isinstance(discussion.get("id"), str):
+        _with_retries(
+            f"comment discussion {plugin_name}",
+            lambda: _add_discussion_comment(cast(str, discussion.get("id")), suspension_comment),
+        )
     url = discussion.get("url") if isinstance(discussion.get("url"), str) else ""
     if not url:
         _fail(f"Created discussion missing url for '{plugin_name}'")
@@ -572,6 +657,20 @@ def main() -> int:
 
     for plugin_name in plugin_names:
         try:
+            if _plugin_blocked(plugin_name):
+                action, discussion_url = _sync_existing_plugin(owner, repo, repo_id, category_id, plugin_name)
+                if action == "created":
+                    created += 1
+                else:
+                    updated += 1
+                if _remove_index_plugin(index, plugin_name):
+                    removed += 1
+                    print(f"Removed from index: {plugin_name}")
+                else:
+                    print(f"Missing from index: {plugin_name}")
+                print(f"{action.capitalize()} blocked plugin discussion: {plugin_name} -> {discussion_url}")
+                continue
+
             if _plugin_exists(plugin_name):
                 action, discussion_url = _sync_existing_plugin(owner, repo, repo_id, category_id, plugin_name)
                 meta = _read_plugin_yaml(plugin_name)
