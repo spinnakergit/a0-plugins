@@ -345,10 +345,18 @@ def _upsert_index_plugin(index: dict[str, Any], plugin_name: str, entry: dict[st
     if isinstance(existing, dict):
         if isinstance(existing.get("stars"), int) and not isinstance(entry.get("stars"), int):
             entry["stars"] = existing.get("stars")
-        if isinstance(existing.get("latest_commit"), str) and not isinstance(entry.get("latest_commit"), str):
-            entry["latest_commit"] = existing.get("latest_commit")
-        if isinstance(existing.get("latest_commit_timestamp"), str) and not isinstance(entry.get("latest_commit_timestamp"), str):
-            entry["latest_commit_timestamp"] = existing.get("latest_commit_timestamp")
+        if isinstance(existing.get("version"), str) and not isinstance(entry.get("version"), str):
+            entry["version"] = existing.get("version")
+        existing_commit = existing.get("commit")
+        if not isinstance(existing_commit, str) or not existing_commit:
+            existing_commit = existing.get("latest_commit") if isinstance(existing.get("latest_commit"), str) else None
+        if isinstance(existing_commit, str) and existing_commit and not isinstance(entry.get("commit"), str):
+            entry["commit"] = existing_commit
+        existing_updated = existing.get("updated")
+        if not isinstance(existing_updated, str) or not existing_updated:
+            existing_updated = existing.get("latest_commit_timestamp") if isinstance(existing.get("latest_commit_timestamp"), str) else None
+        if isinstance(existing_updated, str) and existing_updated and not isinstance(entry.get("updated"), str):
+            entry["updated"] = existing_updated
     plugins[plugin_name] = entry
 
 

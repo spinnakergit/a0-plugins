@@ -86,6 +86,14 @@ def _save_index(index: dict[str, Any]) -> None:
     INDEX_PATH.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _extract_plugin_version(plugin_yaml_text: str) -> str | None:
+    match = re.search(r"(?m)^version\s*:\s*(['\"]?)([^'\"#\n]+)\1\s*(?:#.*)?$", plugin_yaml_text)
+    if not match:
+        return None
+    version = match.group(2).strip()
+    return version or None
+
+
 def _extract_latest_commit(repo_obj: dict[str, Any]) -> tuple[str, str] | None:
     default_branch_ref = repo_obj.get("defaultBranchRef")
     if not isinstance(default_branch_ref, dict):
@@ -130,7 +138,7 @@ def _scan_and_write_updates(chunk_size: int, updates_path: Path) -> int:
         blocks: list[str] = []
         for i, (_, owner, repo) in enumerate(batch):
             blocks.append(
-                f'r{i}: repository(owner: "{owner}", name: "{repo}") {{ stargazerCount defaultBranchRef {{ target {{ ... on Commit {{ oid committedDate }} }} }} }}'
+                f'r{i}: repository(owner: "{owner}", name: "{repo}") {{ stargazerCount defaultBranchRef {{ target {{ ... on Commit {{ oid committedDate }} }} }} object(expression: "HEAD:plugin.yaml") {{ ... on Blob {{ text }} }} }}'
             )
         query = "query {\n" + "\n".join(blocks) + "\n}"
         # We want per-alias errors without failing the whole run.
@@ -191,9 +199,16 @@ def _scan_and_write_updates(chunk_size: int, updates_path: Path) -> int:
             }
             latest_commit = _extract_latest_commit(repo_obj)
             if latest_commit is not None:
-                latest_commit_sha, latest_commit_timestamp = latest_commit
-                updates[plugin_name]["latest_commit"] = latest_commit_sha
-                updates[plugin_name]["latest_commit_timestamp"] = latest_commit_timestamp
+                commit_sha, updated = latest_commit
+                updates[plugin_name]["commit"] = commit_sha
+                updates[plugin_name]["updated"] = updated
+            plugin_yaml_obj = repo_obj.get("object")
+            if isinstance(plugin_yaml_obj, dict):
+                plugin_yaml_text = plugin_yaml_obj.get("text")
+                if isinstance(plugin_yaml_text, str):
+                    version = _extract_plugin_version(plugin_yaml_text)
+                    if version is not None:
+                        updates[plugin_name]["version"] = version
 
     updates_path.write_text(json.dumps(updates, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Wrote repo stats updates for {len(updates)} plugins -> {updates_path.relative_to(REPO_ROOT)}")
@@ -223,12 +238,21 @@ def _apply_updates(updates_path: Path) -> int:
         stars = upd.get("stars")
         if isinstance(stars, int):
             entry["stars"] = stars
-        latest_commit = upd.get("latest_commit")
-        if isinstance(latest_commit, str) and latest_commit:
-            entry["latest_commit"] = latest_commit
-        latest_commit_timestamp = upd.get("latest_commit_timestamp")
-        if isinstance(latest_commit_timestamp, str) and latest_commit_timestamp:
-            entry["latest_commit_timestamp"] = latest_commit_timestamp
+        version = upd.get("version")
+        if isinstance(version, str) and version:
+            entry["version"] = version
+        commit = upd.get("commit")
+        if not isinstance(commit, str) or not commit:
+            commit = upd.get("latest_commit") if isinstance(upd.get("latest_commit"), str) else None
+        if isinstance(commit, str) and commit:
+            entry["commit"] = commit
+            entry.pop("latest_commit", None)
+        updated = upd.get("updated")
+        if not isinstance(updated, str) or not updated:
+            updated = upd.get("latest_commit_timestamp") if isinstance(upd.get("latest_commit_timestamp"), str) else None
+        if isinstance(updated, str) and updated:
+            entry["updated"] = updated
+            entry.pop("latest_commit_timestamp", None)
         applied += 1
 
     _save_index(index)
